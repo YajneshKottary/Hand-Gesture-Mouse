@@ -1,0 +1,157 @@
+
+import cv2 as cv
+import mediapipe as mp
+import numpy as np
+import mouse
+from math import hypot
+import time
+from model import KeyPointClassifier, PointHistoryClassifier
+
+class GestureMouseController:
+    def __init__(self):
+        
+        self.mp_hands = mp.solutions.hands
+        self.hands = self.mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=1,
+            min_detection_confidence=0.7,
+            min_tracking_confidence=0.5,
+        )
+        
+        
+        self.keypoint_classifier = KeyPointClassifier()
+        self.point_history_classifier = PointHistoryClassifier()
+        
+        
+        self.screen_width, self.screen_height = 1920, 1080  
+        self.smooth_factor = 0.5
+        self.prev_x, self.prev_y = 0, 0
+        self.is_clicking = False
+        
+        
+        self.cap = cv.VideoCapture(0)
+        self.cap.set(cv.CAP_PROP_FRAME_WIDTH, 960)
+        self.cap.set(cv.CAP_PROP_FRAME_HEIGHT, 540)
+
+    def process_gestures(self, hand_landmarks, gesture_id):
+        if hand_landmarks:
+            
+            index_x = int(hand_landmarks.landmark[8].x * self.screen_width)
+            index_y = int(hand_landmarks.landmark[8].y * self.screen_height)
+            
+            
+            smooth_x = int(self.prev_x + (index_x - self.prev_x) * self.smooth_factor)
+            smooth_y = int(self.prev_y + (index_y - self.prev_y) * self.smooth_factor)
+            
+            
+            self.prev_x, self.prev_y = smooth_x, smooth_y
+            
+            
+            if gesture_id == 2:  
+                mouse.move(smooth_x, smooth_y)
+            
+            
+            if gesture_id == 3:  
+                if not self.is_clicking:
+                    mouse.click(button='left')
+                    self.is_clicking = True
+            else:
+                self.is_clicking = False
+
+    def run(self):
+        while True:
+            ret, frame = self.cap.read()
+            if not ret:
+                break
+                
+            
+            frame = cv.flip(frame, 1)
+            
+            
+            rgb_frame = cv.cvtColor(frame, cv.COLOR_BGR2RGB)
+            rgb_frame.flags.writeable = False
+            
+            
+            results = self.hands.process(rgb_frame)
+            rgb_frame.flags.writeable = True
+            
+            if results.multi_hand_landmarks:
+                for hand_landmarks in results.multi_hand_landmarks:
+                    
+                    landmark_list = self.calc_landmark_list(frame, hand_landmarks)
+                    
+                    
+                    processed_landmark_list = self.pre_process_landmark(landmark_list)
+                    
+                    
+                    gesture_id = self.keypoint_classifier(processed_landmark_list)
+                    
+                    
+                    self.process_gestures(hand_landmarks, gesture_id)
+                    
+                    
+                    self.draw_landmarks(frame, landmark_list)
+            
+            
+            cv.imshow('Gesture Mouse Control', frame)
+            
+            
+            if cv.waitKey(1) & 0xFF == ord('q'):
+                break
+        
+        self.cleanup()
+
+    def calc_landmark_list(self, image, landmarks):
+        image_width, image_height = image.shape[1], image.shape[0]
+        landmark_point = []
+        
+        for _, landmark in enumerate(landmarks.landmark):
+            landmark_x = min(int(landmark.x * image_width), image_width - 1)
+            landmark_y = min(int(landmark.y * image_height), image_height - 1)
+            landmark_point.append([landmark_x, landmark_y])
+            
+        return landmark_point
+
+    def pre_process_landmark(self, landmark_list):
+        temp_landmark_list = np.array(landmark_list)
+        
+        
+        base_x, base_y = landmark_list[0]
+        temp_landmark_list = temp_landmark_list - [base_x, base_y]
+        
+        
+        temp_landmark_list = temp_landmark_list.flatten()
+        
+        
+        max_value = max(map(abs, temp_landmark_list))
+        temp_landmark_list = temp_landmark_list / max_value
+        
+        return temp_landmark_list.tolist()
+
+    def draw_landmarks(self, image, landmark_points):
+        if len(landmark_points) > 0:
+            
+            connections = [
+                (0, 1), (1, 2), (2, 3), (3, 4),  
+                (5, 6), (6, 7), (7, 8),          
+                (9, 10), (10, 11), (11, 12),     
+                (13, 14), (14, 15), (15, 16),    
+                (17, 18), (18, 19), (19, 20),    
+                (0, 5), (5, 9), (9, 13), (13, 17), (0, 17)  
+            ]
+            
+            for start, end in connections:
+                cv.line(image, tuple(landmark_points[start]), tuple(landmark_points[end]),
+                       (0, 255, 0), 2)
+                
+            
+            for point in landmark_points:
+                cv.circle(image, tuple(point), 4, (0, 0, 255), -1)
+
+    def cleanup(self):
+        self.cap.release()
+        cv.destroyAllWindows()
+
+if __name__ == '__main__':
+    controller = GestureMouseController()
+    controller.run()
